@@ -16,6 +16,10 @@ struct ProfileView: View {
     @State private var managedURL = ""
     @State private var managedError: String?
     @State private var importing = false
+    @State private var qxResult: QXConversion?
+    @State private var qxAddSubs = true
+    @State private var qxFileName = ""
+    @State private var qxError: String?
 
     private var profiles: ProfileStore { model.profiles }
 
@@ -40,6 +44,8 @@ struct ProfileView: View {
                             Button("立即更新受管配置") { Task { await profiles.refreshManaged(force: true) } }
                             Button("转为本地副本") { profiles.detachManaged(); mainDraft = profiles.mainText }
                         }
+                        Divider()
+                        Button("从圈叉 (Quantumult X) 配置导入…") { pickQuantumultX() }
                         Divider()
                         Button("在本地覆盖中插入 MitM / 重写 / 脚本模板") { insertMitMTemplate() }
                         Divider()
@@ -88,6 +94,68 @@ struct ProfileView: View {
         }
         .onChange(of: profiles.mainText) { _, v in if !dirty || mainDraft.isEmpty { mainDraft = v } }
         .sheet(isPresented: $showManaged) { managedSheet }
+        .sheet(isPresented: Binding(get: { qxResult != nil }, set: { if !$0 { qxResult = nil } })) { qxSheet }
+        .alert("导入失败", isPresented: Binding(get: { qxError != nil }, set: { if !$0 { qxError = nil } })) {
+            Button("好") { qxError = nil }
+        } message: { Text(qxError ?? "") }
+    }
+
+    // MARK: 圈叉配置导入
+
+    /// 选择圈叉配置文件并转换，成功后弹出预览
+    private func pickQuantumultX() {
+        let panel = NSOpenPanel()
+        panel.title = "选择圈叉 (Quantumult X) 配置文件"
+        panel.allowedContentTypes = [.data]
+        panel.allowsMultipleSelection = false
+        let qx = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/iCloud~com~crossutility~quantumult-x/Documents/Profiles")
+        if FileManager.default.fileExists(atPath: qx.path) { panel.directoryURL = qx }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            qxResult = try model.convertQuantumultX(at: url)
+            qxFileName = url.lastPathComponent
+            qxAddSubs = true
+        } catch { qxError = error.localizedDescription }
+    }
+
+    private var qxSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("导入圈叉配置").font(.title2.weight(.semibold))
+            if let r = qxResult {
+                Text("\(qxFileName) 已转换为 Flash 配置：\(r.nodeCount) 个自定义节点、\(r.groupCount) 个策略组、\(r.ruleCount) 条规则（其中 \(r.ruleSetCount) 个远程规则集）。确认后会替换当前主配置，原配置自动备份。")
+                    .font(.callout).foregroundStyle(.secondary)
+                if !r.remoteServers.isEmpty {
+                    Toggle("同时添加配置里的订阅（\(r.remoteServers.map(\.tag).joined(separator: "、"))；已添加过的会跳过）", isOn: $qxAddSubs)
+                }
+                if !r.notes.isEmpty {
+                    Text("转换说明").font(.headline)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(r.notes.enumerated()), id: \.offset) { _, n in
+                                Label(n, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 140)
+                }
+                HStack {
+                    Spacer()
+                    Button("取消", role: .cancel) { qxResult = nil }.buttonStyle(.glass)
+                    Button("替换主配置并应用") {
+                        Task {
+                            importing = true; defer { importing = false }
+                            let msgs = await model.applyQuantumultX(r, addSubscriptions: qxAddSubs)
+                            mainDraft = profiles.mainText
+                            target = .main
+                            qxResult = nil
+                            model.noticeMessage = msgs.joined(separator: "；")
+                        }
+                    }
+                    .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction).disabled(importing)
+                }
+            }
+        }
+        .padding(24).frame(width: 520)
     }
 
     /// 把 MitM / 重写 / 脚本的示例段落追加到本地覆盖，并切换到该标签

@@ -41,6 +41,30 @@ struct SettingsView: View {
                     Text("调试").tag("debug"); Text("信息").tag("info"); Text("警告").tag("warning"); Text("错误").tag("error")
                 }
                 .onChange(of: settings.logLevel) { _, _ in pendingRestart = true }
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("绕开其他 VPN / 代理软件（圈叉、小火箭等）", isOn: $settings.bypassOtherTunnel)
+                        .onChange(of: settings.bypassOtherTunnel) { _, _ in
+                            if model.core.status.isRunning { model.scheduleApply() }
+                        }
+                    if model.routeInfo.hasTunnel {
+                        Text(settings.bypassOtherTunnel
+                             ? "已检测到 \(model.routeInfo.interfaces.filter { $0.hasPrefix("utun") }.joined(separator: "、")) 接管默认路由；开启内核后会绑定 \(model.routeInfo.physical ?? "物理网卡") 出站，流量不再经过它们"
+                             : "已检测到其他 VPN 接管默认路由：关闭此项时，Flash 的出站流量会被它再次转发（节点可能连不上、出口 IP 仍是圈叉的）")
+                            .font(.caption).foregroundStyle(settings.bypassOtherTunnel ? Color.secondary : Color.orange)
+                    } else {
+                        Text("未检测到其他 VPN；一旦出现会自动绑定物理网卡出站")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle("停止 Flash 时，自动重新连接被它断开的 VPN", isOn: $settings.reconnectVPNOnStop)
+                if !model.conflictVPNs.isEmpty {
+                    HStack {
+                        Label("「\(model.conflictVPNs.map(\.name).joined(separator: "、"))」正在接管系统网络，系统代理不会生效", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).font(.callout)
+                        Spacer()
+                        Button("断开") { Task { await model.disconnectConflictingVPNs() } }.buttonStyle(.glassProminent)
+                    }
+                }
                 if pendingRestart && model.core.status.isRunning {
                     HStack {
                         Label("以上更改需要重启内核后生效", systemImage: "arrow.clockwise.circle").foregroundStyle(.orange)

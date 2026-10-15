@@ -182,7 +182,7 @@ public enum SurgeProfileParser {
             diagnostics.append(.init(line: no, severity: .error, message: "节点 \(name): \(msg)"))
             return nil
         }
-        let supported: Set<String> = ["http", "https", "socks5", "socks5-tls", "ss", "vmess", "trojan", "hysteria2", "tuic", "tuic-v5", "snell", "anytls"]
+        let supported: Set<String> = ["http", "https", "socks5", "socks5-tls", "ss", "vmess", "vless", "trojan", "hysteria2", "tuic", "tuic-v5", "snell", "anytls"]
         guard supported.contains(type) else {
             diagnostics.append(.init(line: no, severity: .warning, message: "节点 \(name): 暂不支持类型 \(type)，已跳过"))
             return nil
@@ -248,6 +248,18 @@ public enum SurgeProfileParser {
             applyWebSocket()
             applyCommon()
             f["sni"] = nil
+        case "vless":
+            // Flash 扩展：Surge 本身没有 VLESS，这里沿用 vmess 的写法（username 为 UUID）
+            f["type"] = "vless"
+            guard let uuid = kv["username"] ?? kv["uuid"] else { return bad("VLESS 缺少 username(UUID)") }
+            f["uuid"] = .string(uuid)
+            f["udp"] = true
+            if flag("tls") == true { f["tls"] = true }
+            if let flow = kv["flow"], !flow.isEmpty { f["flow"] = .string(flow) }
+            if let fp = kv["client-fingerprint"], !fp.isEmpty { f["client-fingerprint"] = .string(fp) }
+            applyWebSocket()
+            applyCommon()
+            if let sni = f["sni"] { f["servername"] = sni; f["sni"] = nil }
         case "trojan":
             f["type"] = "trojan"
             guard let pwd = kv["password"] else { return bad("Trojan 缺少 password") }
@@ -363,11 +375,14 @@ public enum SurgeProfileParser {
         case "RULE-SET", "DOMAIN-SET":
             let behavior = type == "DOMAIN-SET" ? "domain" : "classical"
             if value.hasPrefix("http://") || value.hasPrefix("https://") {
-                let name = (type == "DOMAIN-SET" ? "ds-" : "rs-") + SurgeText.stableHash(value)
+                // Flash 扩展：`format=qx` 表示这是圈叉语法的列表，需要先转换
+                let isQX = parts.dropFirst(3).contains { SurgeText.keyValue($0).map { $0.key == "format" && $0.value.lowercased() == "qx" } ?? false }
+                let name = (isQX ? "qx-" : (type == "DOMAIN-SET" ? "ds-" : "rs-")) + SurgeText.stableHash(value)
                 if !profile.ruleProviders.contains(where: { $0.name == name }) {
                     var interval = 86400
                     for f in parts.dropFirst(3) { if let (k, v) = SurgeText.keyValue(f), k == "update-interval", let n = Int(v), n > 0 { interval = n } }
-                    profile.ruleProviders.append(RuleProviderSpec(name: name, behavior: behavior, url: value, interval: interval))
+                    profile.ruleProviders.append(RuleProviderSpec(name: name, behavior: behavior, url: value, interval: interval,
+                                                                  flavor: isQX ? "qx" : nil))
                 }
                 body = "RULE-SET,\(name)"
             } else {

@@ -15,6 +15,8 @@ struct TrafficView: View {
     @State private var processFilter: String?
     @State private var selection: Set<String> = []
     @State private var showInspector = false
+    /// 最近一次选中的记录：连接刷新瞬间查不到时继续展示它，避免详情闪成占位页
+    @State private var lastRecord: ConnectionRecord?
     @State private var sortOrder = [KeyPathComparator(\ConnectionRecord.startedAt, order: .reverse)]
 
     private var source: [ConnectionRecord] {
@@ -45,6 +47,29 @@ struct TrafficView: View {
         return (model.active + model.closed).first { $0.id == id }
     }
 
+    /// 检查器实际展示的记录
+    private var shownRecord: ConnectionRecord? {
+        if let r = selectedRecord { return r }
+        guard let id = selection.first, lastRecord?.id == id else { return nil }
+        return lastRecord
+    }
+
+    /// 无动画地切换检查器：展开动画期间表格与玻璃卡片会逐帧重排，是闪动的来源
+    private func setInspector(_ on: Bool) {
+        guard showInspector != on else { return }
+        var t = Transaction(animation: nil)
+        t.disablesAnimations = true
+        withTransaction(t) { showInspector = on }
+    }
+
+    /// 选中变化与打开检查器放在同一次状态更新里，避免多出一轮布局
+    private var selectionBinding: Binding<Set<String>> {
+        Binding(get: { selection }, set: { new in
+            selection = new
+            if !new.isEmpty { setInspector(true) }
+        })
+    }
+
     var body: some View {
         let rows = self.rows
         VStack(spacing: 0) {
@@ -59,7 +84,7 @@ struct TrafficView: View {
             .padding(.top, 8)
             .padding(.bottom, 12)
 
-            Table(rows, selection: $selection, sortOrder: $sortOrder) {
+            Table(rows, selection: selectionBinding, sortOrder: $sortOrder) {
                 TableColumn("时间", value: \.startedAt) { r in
                     Text(Fmt.clock(r.startedAt)).monospacedDigit().lineLimit(1).foregroundStyle(r.isActive ? .primary : .secondary)
                         .rowCell()
@@ -149,21 +174,24 @@ struct TrafficView: View {
                 Button { model.clearHistory() } label: { Label("清空历史", systemImage: "trash") }
                     .help("清空已关闭连接历史")
                     .disabled(model.closed.isEmpty)
-                Button { showInspector.toggle() } label: { Label("详情", systemImage: "sidebar.trailing") }
+                Button { setInspector(!showInspector) } label: { Label("详情", systemImage: "sidebar.trailing") }
                     .help("显示 / 隐藏详情")
             }
         }
         .inspector(isPresented: $showInspector) {
             Group {
-                if let r = selectedRecord {
+                if let r = shownRecord {
                     ConnectionDetail(record: r)
                 } else {
                     ContentUnavailableView("未选择连接", systemImage: "cursorarrow.click", description: Text("在表格中选择一条连接查看详情"))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transaction { $0.animation = nil }
             .inspectorColumnWidth(min: 300, ideal: 380, max: 600)
         }
-        .onChange(of: selection) { _, new in if !new.isEmpty { showInspector = true } }
+        .onChange(of: selectedRecord?.id) { _, _ in if let r = selectedRecord { lastRecord = r } }
+        .onChange(of: selectedRecord?.download) { _, _ in if let r = selectedRecord { lastRecord = r } }
     }
 
     // MARK: 筛选菜单
@@ -270,7 +298,7 @@ struct ConnectionDetail: View {
     }
 
     private var overview: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        GlassEffectContainer(spacing: 16) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 10) {
                     Image(nsImage: ProcessIcon.image(path: record.processPath, name: record.process))

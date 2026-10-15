@@ -167,6 +167,9 @@ struct Banner: View {
     var message: String
     var systemImage: String = "exclamationmark.triangle.fill"
     var tint: Color = .orange
+    /// 可选的操作按钮（标题与回调）
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
     var onClose: () -> Void
 
     var body: some View {
@@ -174,6 +177,9 @@ struct Banner: View {
             Image(systemName: systemImage).foregroundStyle(tint)
             Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
             Spacer(minLength: 8)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action).buttonStyle(.glassProminent).controlSize(.small)
+            }
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
         }

@@ -177,6 +177,36 @@ public enum PrivilegedCore {
         }
     }
 
+    // MARK: 启动结果检查
+
+    /// 从特权内核日志文本中找出最近一次启动里的 TUN 创建失败原因
+    /// - Parameter log: 日志文本
+    /// - Returns: 失败原因（如 `add route: 1.0.0.0/8: file exists`）；没有失败返回 nil
+    public static func parseTUNError(log: String) -> String? {
+        let lines = log.split(whereSeparator: \.isNewline).map(String.init)
+        // 只看最近一次启动之后的日志
+        let start = lines.lastIndex { $0.contains("Start initial configuration in progress") } ?? 0
+        for line in lines[start...].reversed() where line.contains("Start TUN listening error") {
+            if let r = line.range(of: "error: ") {
+                var msg = String(line[r.upperBound...])
+                if msg.hasSuffix("\"") { msg.removeLast() }
+                return msg
+            }
+            return "未知原因"
+        }
+        return nil
+    }
+
+    /// 读取日志文件末尾并检查最近一次启动的 TUN 创建结果
+    public static func lastStartTUNError() -> String? {
+        guard let h = try? FileHandle(forReadingFrom: logFile) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 32768 ? size - 32768 : 0)
+        let data = (try? h.readToEnd()) ?? Data()
+        return parseTUNError(log: String(decoding: data, as: UTF8.self))
+    }
+
     // MARK: 启停（无需密码）
 
     /// 创建标记文件，让 LaunchDaemon 拉起特权内核

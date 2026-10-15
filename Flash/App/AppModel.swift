@@ -133,9 +133,57 @@ final class AppModel {
         subscriptions.startAutoUpdate()
         profiles.startAutoUpdate()
         stats.startAutoFlush()
+        // 调试入口：--import-qx <路径> 启动时直接导入圈叉配置（配合 FLASH_HOME 隔离实例做端到端测试）
+        if let i = args.firstIndex(of: "--import-qx"), i + 1 < args.count {
+            do {
+                let r = try convertQuantumultX(at: URL(fileURLWithPath: args[i + 1]))
+                _ = await applyQuantumultX(r, addSubscriptions: args.contains("--import-qx-subs"))
+            } catch { errorMessage = "导入圈叉配置失败：\(error.localizedDescription)" }
+        }
         refreshComposed()
+        routeInfo = NetworkRoute.current()
         startWatcher()
         if settings.startCoreOnLaunch { await startCore() }
+        // 调试入口：--auto-disconnect-vpn 启动后若检测到 VPN 冲突，自动执行一次“断开”（用于端到端验证）
+        if args.contains("--auto-disconnect-vpn") {
+            try? await Task.sleep(for: .seconds(4))
+            await refreshVPNConflict()
+            await disconnectConflictingVPNs()
+        }
+    }
+
+    // MARK: 圈叉（Quantumult X）配置导入
+
+    /// 读取圈叉配置并转换（不落盘），本地资源（如 xxx.list）从同目录读取
+    /// - Parameter url: 圈叉 .conf 文件地址
+    /// - Returns: 转换结果
+    func convertQuantumultX(at url: URL) throws -> QXConversion {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let dir = url.deletingLastPathComponent()
+        return QuantumultXConverter.convert(text) { name in
+            guard !name.contains("/") else { return nil }
+            return try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)
+        }
+    }
+
+    /// 应用转换结果：备份并替换主配置，按需添加 server_remote 订阅
+    /// - Parameters:
+    ///   - result: 转换结果
+    ///   - addSubscriptions: 是否把尚未添加的订阅一并加入
+    /// - Returns: 订阅添加过程中的提示（失败原因等）
+    func applyQuantumultX(_ result: QXConversion, addSubscriptions: Bool) async -> [String] {
+        var messages: [String] = []
+        let backup = AppPaths.profilesDir.appendingPathComponent("main-backup-\(Int(Date().timeIntervalSince1970)).conf")
+        try? profiles.mainText.write(to: backup, atomically: true, encoding: .utf8)
+        messages.append("原主配置已备份到 \(backup.lastPathComponent)")
+        if addSubscriptions {
+            for r in result.remoteServers where !subscriptions.items.contains(where: { $0.url == r.url }) {
+                do { try await subscriptions.add(name: r.tag, url: r.url); messages.append("已添加订阅「\(r.tag)」") }
+                catch { messages.append("订阅「\(r.tag)」添加失败：\(error.localizedDescription)") }
+            }
+        }
+        profiles.saveMain(result.text)
+        return messages
     }
 
     // MARK: 增强模式（TUN）
@@ -191,13 +239,39 @@ final class AppModel {
         }
     }
 
+    /// 当前内核绑定的物理网卡（nil 表示未绑定）；界面据此提示用户
+    private(set) var boundInterface: String?
+    /// 最近一次检测到的默认路由（用于设置页展示其他 VPN 状态）
+    private(set) var routeInfo = DefaultRouteInfo(interfaces: [], physical: nil, hasTunnel: false)
+
+    /// 计算应绑定的物理网卡：开启开关、非增强模式、且默认路由被其他隧道接管时才绑定
+    private func desiredInterface(_ route: DefaultRouteInfo) -> String? {
+        guard settings.bypassOtherTunnel, !wantsTun else { return nil }
+        return route.bypassInterface
+    }
+
+    /// 下载并转换圈叉语法的规则集（缓存 24 小时）；失败只提示，不阻止内核启动
+    /// - Returns: 是否有缓存文件被更新
+    @discardableResult
+    private func prepareQXRuleSets() async -> Bool {
+        let r = await QXRuleSetCache.prepare(providers: composed.ruleProviders)
+        for w in r.warnings { append(log: LogEntry(level: "warning", message: w)) }
+        if !r.warnings.isEmpty { noticeMessage = "\(r.warnings.count) 个圈叉规则集下载失败，已沿用旧缓存（详见日志）" }
+        return r.changed
+    }
+
     private func makeYAML() throws -> String {
+        let route = NetworkRoute.current()
+        routeInfo = route
+        let iface = desiredInterface(route)
+        boundInterface = iface
         let options = RuntimeOptions(
             mixedPort: activePort, controllerPort: controllerPort, secret: secret,
             allowLan: settings.allowLan, mode: outboundMode.rawValue,
             logLevel: settings.logLevel, ipv6: settings.ipv6,
             tunEnabled: wantsTun, tunStack: settings.tunStack,
-            mitmServerPort: mitmPorts?.0, mitmUpstreamPort: mitmPorts?.1)
+            mitmServerPort: mitmPorts?.0, mitmUpstreamPort: mitmPorts?.1,
+            interfaceName: iface)
         return try ConfigGenerator.yaml(profile: composed, options: options)
     }
 
@@ -228,8 +302,12 @@ final class AppModel {
         secret = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 
         await prepareMitM()
+        await prepareQXRuleSets()
         do {
             let yaml = try makeYAML()
+            if let iface = boundInterface {
+                noticeMessage = "检测到其他 VPN/代理软件（\(routeInfo.interfaces.filter { $0.hasPrefix("utun") }.joined(separator: "、"))）接管了默认路由，Flash 内核已绑定 \(iface) 出站，避免流量被它再次转发"
+            }
             await core.start(yaml: yaml, controllerPort: controllerPort, secret: secret, privileged: useTun)
         } catch {
             errorMessage = "生成配置失败：\(error.localizedDescription)"
@@ -241,9 +319,22 @@ final class AppModel {
         }
         lastStatusRunning = true
         tunActive = useTun
+        tunFailed = false
         await onCoreRunning()
-        // TUN 已接管全部流量，不再改写系统代理，避免重复经过本地代理端口
-        if settings.autoSystemProxy && !useTun { await setSystemProxy(true) }
+        // 内核不会因为 TUN 创建失败而退出，必须读日志确认：圈叉等 VPN 已占用路由时会失败
+        var tunOK = useTun
+        if useTun {
+            try? await Task.sleep(for: .milliseconds(1500))
+            if let reason = PrivilegedCore.lastStartTUNError() {
+                tunOK = false
+                tunFailed = true
+                tunActive = false
+                errorMessage = "增强模式没有生效：虚拟网卡创建失败（\(reason)）。通常是圈叉等 VPN 已占用路由，请先断开它；现已退回系统代理模式"
+                await refreshVPNConflict()
+            }
+        }
+        // TUN 已接管全部流量时不改写系统代理，避免重复经过本地代理端口；TUN 失败则退回系统代理
+        if settings.autoSystemProxy && !tunOK { await setSystemProxy(true) }
     }
 
     func stopCore() async {
@@ -253,6 +344,7 @@ final class AppModel {
         if systemProxyOn { await setSystemProxy(false) }
         stopStreams()
         await core.stop()
+        if settings.reconnectVPNOnStop { await reconnectDisconnectedVPNs() }
         lastStatusRunning = false
         tunActive = false
         policies = [:]
@@ -293,8 +385,27 @@ final class AppModel {
         }
     }
 
+    @ObservationIgnored private var routeTick = 0
+
+    /// 每 5 秒检查一次默认路由：其他 VPN 开关或网卡切换后重新应用配置，保证绑定的网卡始终正确
+    private func checkRouteChange() async {
+        routeTick += 1
+        if routeTick % 3600 == 0, core.status.isRunning, await prepareQXRuleSets() { scheduleApply() }
+        guard routeTick % 5 == 0, core.status.isRunning, !applyingRoute else { return }
+        let route = await Task.detached { NetworkRoute.current() }.value
+        routeInfo = route
+        if systemProxyOn || tunFailed { await refreshVPNConflict() }
+        if desiredInterface(route) != boundInterface {
+            applyingRoute = true
+            await applyConfig()
+            applyingRoute = false
+        }
+    }
+    @ObservationIgnored private var applyingRoute = false
+
     private func checkCoreState() async {
         if isDemo || busy { return }
+        await checkRouteChange()
         let running = core.status.isRunning
         if running, let client = core.client, client !== streamClient {
             // 内核被自动拉起，client 已更换
@@ -325,6 +436,7 @@ final class AppModel {
         refreshComposed()
         guard !isDemo, core.status.isRunning else { return }
         await prepareMitM()
+        await prepareQXRuleSets()
         do {
             let yaml = try makeYAML()
             let check = await CoreManager.validate(yaml: yaml)
@@ -367,9 +479,83 @@ final class AppModel {
             } catch { return .failure(error) }
         }.value
         switch result {
-        case .success: systemProxyOn = on
+        case .success:
+            systemProxyOn = on
+            if on { await refreshVPNConflict(delay: 0.8) } else { conflictVPNs = [] }
         case .failure(let e): errorMessage = "设置系统代理失败：\(e.localizedDescription)"
         }
+    }
+
+    // MARK: VPN 冲突（圈叉等成为主网络服务时，系统代理对应用不生效）
+
+    /// 导致系统代理不生效的 VPN（已连接且全局代理没有指向 Flash）；为空表示没有冲突
+    private(set) var conflictVPNs: [VPNService] = []
+    /// 被 Flash 断开的 VPN，停止内核时可自动重连
+    @ObservationIgnored private var disconnectedVPNs: [VPNService] = []
+
+    /// 重新检测冲突
+    /// - Parameter delay: 系统刷新全局代理需要一点时间，先等待再读取
+    func refreshVPNConflict(delay: Double = 0) async {
+        let tunBroken = tunFailed
+        guard systemProxyOn || tunBroken, !isDemo else { conflictVPNs = []; return }
+        if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+        let port = activePort
+        let proxyOn = systemProxyOn
+        let found: [VPNService] = await Task.detached {
+            let vpns = VPNConflict.list().filter(\.isConnected)
+            if vpns.isEmpty { return [] }
+            if tunBroken { return vpns }
+            if proxyOn, !VPNConflict.globalProxy().points(to: port) { return vpns }
+            return []
+        }.value
+        if found.isEmpty { dismissedConflict = []; conflictVPNs = []; return }
+        if Set(found.map(\.id)) == dismissedConflict { return }
+        if found != conflictVPNs {
+            conflictVPNs = found
+            if !tunBroken {
+                noticeMessage = "「\(found.map(\.name).joined(separator: "、"))」VPN 正在接管系统网络，应用不会读取 Flash 设置的系统代理，流量仍走它。可一键断开它，或改用增强模式"
+            }
+        }
+    }
+
+    /// 增强模式创建虚拟网卡失败（路由冲突）；断开冲突 VPN 后需重启内核
+    private(set) var tunFailed = false
+
+    /// 关闭冲突横幅（本次运行不再提示同一组 VPN）
+    func dismissVPNConflict() {
+        dismissedConflict = Set(conflictVPNs.map(\.id))
+        conflictVPNs = []
+    }
+    @ObservationIgnored private var dismissedConflict: Set<String> = []
+
+    /// 断开冲突的 VPN 并复查系统代理
+    func disconnectConflictingVPNs() async {
+        let targets = conflictVPNs
+        guard !targets.isEmpty else { return }
+        let ok: [VPNService] = await Task.detached { targets.filter { VPNConflict.disconnect($0) } }.value
+        disconnectedVPNs += ok.filter { v in !disconnectedVPNs.contains(v) }
+        if tunFailed && !ok.isEmpty {
+            // 路由已腾出来，重启内核让增强模式重新创建虚拟网卡
+            tunFailed = false
+            conflictVPNs = []
+            await restartCore()
+            noticeMessage = "已断开「\(ok.map(\.name).joined(separator: "、"))」并重启内核，增强模式已重新接管流量；停止 Flash 时会自动重新连接"
+            return
+        }
+        await refreshVPNConflict(delay: 1.5)
+        if conflictVPNs.isEmpty {
+            noticeMessage = "已断开「\(ok.map(\.name).joined(separator: "、"))」，系统代理已对应用生效；停止 Flash 时会自动重新连接"
+        } else if ok.isEmpty {
+            errorMessage = "断开 VPN 失败，请在对应 App 里手动断开"
+        }
+    }
+
+    /// 重新连接此前被断开的 VPN
+    func reconnectDisconnectedVPNs() async {
+        let list = disconnectedVPNs
+        disconnectedVPNs = []
+        guard !list.isEmpty else { return }
+        await Task.detached { for v in list { _ = VPNConflict.connect(v) } }.value
     }
 
     /// 退出前同步清理（由 AppDelegate 调用）
@@ -381,6 +567,7 @@ final class AppModel {
         await stats.flush()
         await Task.detached { SystemProxy.shared.restoreSilently() }.value
         await core.stop()
+        if settings.reconnectVPNOnStop { await reconnectDisconnectedVPNs() }
         await mitm.shutdown()
     }
 

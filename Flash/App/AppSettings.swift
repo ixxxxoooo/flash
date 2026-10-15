@@ -21,6 +21,12 @@ final class AppSettings {
     var tunEnabled: Bool { didSet { defaults.set(tunEnabled, forKey: "tunEnabled") } }
     var tunStack: String { didSet { defaults.set(tunStack, forKey: "tunStack") } }
 
+    /// 检测到其他 VPN（圈叉等）接管默认路由时，让内核绑定物理网卡出站
+    var bypassOtherTunnel: Bool { didSet { defaults.set(bypassOtherTunnel, forKey: "bypassOtherTunnel") } }
+
+    /// 停止内核或退出时，自动重新连接被 Flash 断开的 VPN
+    var reconnectVPNOnStop: Bool { didSet { defaults.set(reconnectVPNOnStop, forKey: "reconnectVPNOnStop") } }
+
     /// MitM（HTTPS 解密）总开关与报文记录开关
     var mitmEnabled: Bool { didSet { defaults.set(mitmEnabled, forKey: "mitmEnabled") } }
     var mitmRecord: Bool { didSet { defaults.set(mitmRecord, forKey: "mitmRecord") } }
@@ -29,7 +35,7 @@ final class AppSettings {
         defaults.register(defaults: [
             "mixedPort": 6152, "allowLan": false, "autoSystemProxy": true, "startCoreOnLaunch": true,
             "historyLimit": 5000, "logLevel": "info", "ipv6": false, "showMenuBarSpeed": true, "outboundMode": "rule",
-            "tunEnabled": false, "tunStack": "mixed", "mitmEnabled": false, "mitmRecord": true,
+            "tunEnabled": false, "tunStack": "mixed", "mitmEnabled": false, "mitmRecord": true, "bypassOtherTunnel": true, "reconnectVPNOnStop": true,
         ])
         mixedPort = defaults.integer(forKey: "mixedPort")
         allowLan = defaults.bool(forKey: "allowLan")
@@ -44,6 +50,8 @@ final class AppSettings {
         tunStack = defaults.string(forKey: "tunStack") ?? "mixed"
         mitmEnabled = defaults.bool(forKey: "mitmEnabled")
         mitmRecord = defaults.bool(forKey: "mitmRecord")
+        bypassOtherTunnel = defaults.bool(forKey: "bypassOtherTunnel")
+        reconnectVPNOnStop = defaults.bool(forKey: "reconnectVPNOnStop")
     }
 
     // MARK: 开机启动

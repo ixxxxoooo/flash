@@ -17,15 +17,18 @@ public struct RuntimeOptions: Sendable {
     /// MitM 引擎的 SOCKS 端口与上游入站端口；二者都设置且配置里有 MitM 主机名时才会生成相关配置
     public var mitmServerPort: Int?
     public var mitmUpstreamPort: Int?
+    /// 让内核出站连接绑定到指定物理网卡（用于绕开圈叉等 VPN 隧道）；nil 表示不绑定
+    public var interfaceName: String?
 
     public init(mixedPort: Int = 6152, controllerPort: Int = 9090, secret: String = "", allowLan: Bool = false,
                 mode: String = "rule", logLevel: String = "info", ipv6: Bool = false,
                 tunEnabled: Bool = false, tunStack: String = "mixed",
-                mitmServerPort: Int? = nil, mitmUpstreamPort: Int? = nil) {
+                mitmServerPort: Int? = nil, mitmUpstreamPort: Int? = nil, interfaceName: String? = nil) {
         self.mixedPort = mixedPort; self.controllerPort = controllerPort; self.secret = secret
         self.allowLan = allowLan; self.mode = mode; self.logLevel = logLevel; self.ipv6 = ipv6
         self.tunEnabled = tunEnabled; self.tunStack = tunStack
         self.mitmServerPort = mitmServerPort; self.mitmUpstreamPort = mitmUpstreamPort
+        self.interfaceName = interfaceName
     }
 }
 
@@ -55,6 +58,11 @@ public enum ConfigGenerator {
             "geo-auto-update": false,
             "profile": ["store-selected": true, "store-fake-ip": false],
         ]
+
+        // 绑定物理网卡：绕开圈叉 / 其他 VPN 的隧道，让出站连接直接走真实网络
+        if let iface = options.interfaceName, !options.tunEnabled, !iface.isEmpty {
+            root["interface-name"] = iface
+        }
 
         // DNS
         var dns = dnsBlock(profile: profile, ipv6: options.ipv6)
@@ -119,6 +127,12 @@ public enum ConfigGenerator {
                         payload.append(body + (parts.dropFirst(2).contains("no-resolve") ? ",no-resolve" : ""))
                     }
                     providers[rp.name] = ["type": "inline", "behavior": "classical", "payload": payload] as [String: Any]
+                } else if rp.flavor == "qx" {
+                    // 圈叉语法：Flash 已下载转换到 providers/ 目录，内核只读本地文件
+                    providers[rp.name] = [
+                        "type": "file", "behavior": "classical", "format": "text",
+                        "path": "./providers/\(rp.name).txt",
+                    ] as [String: Any]
                 } else if let url = rp.url {
                     providers[rp.name] = [
                         "type": "http", "behavior": rp.behavior, "format": "text", "url": url,

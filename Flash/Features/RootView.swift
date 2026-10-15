@@ -74,13 +74,21 @@ struct RootView: View {
                         if let msg = model.errorMessage {
                             Banner(message: msg) { model.errorMessage = nil }
                         }
-                        if let msg = model.noticeMessage {
+                        if !model.conflictVPNs.isEmpty {
+                            Banner(message: model.tunFailed
+                                   ? "「\(model.conflictVPNs.map(\.name).joined(separator: "、"))」VPN 占用了路由，Flash 增强模式无法创建虚拟网卡，流量仍走它"
+                                   : "「\(model.conflictVPNs.map(\.name).joined(separator: "、"))」VPN 接管了系统网络，Flash 的系统代理不会被应用读取，流量仍走它",
+                                   tint: .red, actionTitle: "断开它", action: { Task { await model.disconnectConflictingVPNs() } }) {
+                                model.dismissVPNConflict()
+                            }
+                        } else if let msg = model.noticeMessage {
                             Banner(message: msg, systemImage: "info.circle.fill", tint: .flashAccent) { model.noticeMessage = nil }
                         }
                     }
                     .padding(.bottom, 12)
                     .animation(.smooth, value: model.errorMessage)
                     .animation(.smooth, value: model.noticeMessage)
+                    .animation(.smooth, value: model.conflictVPNs)
                 }
         }
     }

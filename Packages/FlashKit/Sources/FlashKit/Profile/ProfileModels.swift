@@ -57,9 +57,13 @@ public struct RuleProviderSpec: Codable, Hashable, Sendable {
     public var interval: Int
     /// 内联规则（[Ruleset xxx] 小节）
     public var inlineRules: [String]?
+    /// 列表语法：nil 为 mihomo / Surge 通用写法；"qx" 表示圈叉语法（由 Flash 下载并转换后交给内核）
+    public var flavor: String?
 
-    public init(name: String, behavior: String, url: String? = nil, interval: Int = 86400, inlineRules: [String]? = nil) {
-        self.name = name; self.behavior = behavior; self.url = url; self.interval = interval; self.inlineRules = inlineRules
+    public init(name: String, behavior: String, url: String? = nil, interval: Int = 86400,
+                inlineRules: [String]? = nil, flavor: String? = nil) {
+        self.name = name; self.behavior = behavior; self.url = url; self.interval = interval
+        self.inlineRules = inlineRules; self.flavor = flavor
     }
 }
 
