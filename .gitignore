@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcodeproj
+xcuserdata/
+.swiftpm/
+# 内核二进制与 geo 数据由 scripts/fetch-core.sh 拉取
+Resources/Core/
+dist/
