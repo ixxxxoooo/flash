@@ -114,7 +114,10 @@ public struct Profile: Sendable {
     public var ruleProviders: [RuleProviderSpec] = []
     /// 内置策略别名（如 `Block = reject`）
     public var policyAliases: [String: String] = [:]
-    public var mitmHostnames: [String] = []
+    /// MitM / 重写 / 脚本配置
+    public var mitm = MitMConfig()
+    /// 兼容旧字段：[MITM] 中的主机名文本
+    public var mitmHostnames: [String] { mitm.hostPatterns.map { ($0.exclude ? "-" : "") + $0.host + ($0.port.map { ":\($0)" } ?? "") } }
     public var managed: ManagedConfigInfo?
     public var diagnostics: [ProfileDiagnostic] = []
 

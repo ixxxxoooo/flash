@@ -53,7 +53,7 @@ struct TrafficView: View {
                     ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
+                .fixedSize()
             }
             .padding(.horizontal, 24)
             .padding(.top, 8)
@@ -61,59 +61,68 @@ struct TrafficView: View {
 
             Table(rows, selection: $selection, sortOrder: $sortOrder) {
                 TableColumn("时间", value: \.startedAt) { r in
-                    Text(Fmt.clock(r.startedAt)).monospacedDigit().foregroundStyle(r.isActive ? .primary : .secondary)
+                    Text(Fmt.clock(r.startedAt)).monospacedDigit().lineLimit(1).foregroundStyle(r.isActive ? .primary : .secondary)
+                        .rowCell()
                 }
-                .width(min: 64, ideal: 70, max: 80)
+                .width(min: 58, ideal: 66, max: 76)
 
                 TableColumn("进程", value: \.displayProcess) { r in
                     HStack(spacing: 6) {
                         Image(nsImage: ProcessIcon.image(path: r.processPath, name: r.process)).resizable().frame(width: 16, height: 16)
                         Text(r.displayProcess).lineLimit(1)
                     }
+                    .rowCell()
                 }
-                .width(min: 100, ideal: 130)
+                .width(min: 80, ideal: 110)
 
                 TableColumn("目标", value: \.endpoint) { r in
-                    Text(r.endpoint).lineLimit(1).truncationMode(.middle)
+                    Text(r.endpoint).lineLimit(1).truncationMode(.middle).rowCell()
                 }
-                .width(min: 160, ideal: 240)
+                .width(min: 110, ideal: 190)
 
                 TableColumn("协议", value: \.network) { r in
-                    Text(r.network.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(r.network.uppercased()).font(.caption.monospaced()).lineLimit(1).foregroundStyle(.secondary).rowCell()
                 }
-                .width(44)
+                .width(40)
 
                 TableColumn("规则", value: \.ruleText) { r in
-                    Text(r.ruleText).lineLimit(1).foregroundStyle(.secondary)
+                    Text(r.ruleText).lineLimit(1).foregroundStyle(.secondary).rowCell()
                 }
-                .width(min: 100, ideal: 170)
+                .width(min: 60, ideal: 110)
 
                 TableColumn("策略", value: \.chainText) { r in
-                    PolicyBadge(policy: r.policy, text: r.chainText)
+                    PolicyBadge(policy: r.policy, text: r.chainText).rowCell()
                 }
-                .width(min: 100, ideal: 170)
+                .width(min: 90, ideal: 150)
 
+                // 速率与累计流量拆成独立单列：所有单元格保持单行，避免活动连接的行比其他行高
                 TableColumn("↓", value: \.download) { r in
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text(Fmt.bytes(r.download)).monospacedDigit()
-                        if r.isActive, r.downSpeed > 0 {
-                            Text(Fmt.rate(r.downSpeed)).font(.caption2).foregroundStyle(Color.downColor).monospacedDigit()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    Text(Fmt.bytes(r.download)).monospacedDigit().lineLimit(1)
+                        .rowCell(alignment: .trailing)
                 }
-                .width(min: 70, ideal: 90)
+                .width(min: 56, ideal: 66)
 
                 TableColumn("↑", value: \.upload) { r in
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text(Fmt.bytes(r.upload)).monospacedDigit()
-                        if r.isActive, r.upSpeed > 0 {
-                            Text(Fmt.rate(r.upSpeed)).font(.caption2).foregroundStyle(Color.upColor).monospacedDigit()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    Text(Fmt.bytes(r.upload)).monospacedDigit().lineLimit(1)
+                        .rowCell(alignment: .trailing)
                 }
-                .width(min: 70, ideal: 90)
+                .width(min: 56, ideal: 66)
+
+                TableColumn("↓ 速率", value: \.downSpeed) { r in
+                    Text(r.isActive && r.downSpeed > 0 ? Fmt.rate(r.downSpeed) : "—")
+                        .monospacedDigit().lineLimit(1)
+                        .foregroundStyle(r.isActive && r.downSpeed > 0 ? Color.downColor : Color.secondary.opacity(0.5))
+                        .rowCell(alignment: .trailing)
+                }
+                .width(min: 70, ideal: 78)
+
+                TableColumn("↑ 速率", value: \.upSpeed) { r in
+                    Text(r.isActive && r.upSpeed > 0 ? Fmt.rate(r.upSpeed) : "—")
+                        .monospacedDigit().lineLimit(1)
+                        .foregroundStyle(r.isActive && r.upSpeed > 0 ? Color.upColor : Color.secondary.opacity(0.5))
+                        .rowCell(alignment: .trailing)
+                }
+                .width(min: 70, ideal: 78)
             }
             .contextMenu(forSelectionType: String.self) { ids in
                 contextMenu(for: ids)
@@ -152,7 +161,7 @@ struct TrafficView: View {
                     ContentUnavailableView("未选择连接", systemImage: "cursorarrow.click", description: Text("在表格中选择一条连接查看详情"))
                 }
             }
-            .inspectorColumnWidth(min: 280, ideal: 330, max: 440)
+            .inspectorColumnWidth(min: 300, ideal: 380, max: 600)
         }
         .onChange(of: selection) { _, new in if !new.isEmpty { showInspector = true } }
     }
@@ -232,8 +241,8 @@ struct PolicyBadge: View {
     }
 
     var body: some View {
-        Text(text).font(.caption.weight(.medium)).lineLimit(1)
-            .padding(.horizontal, 7).padding(.vertical, 2)
+        Text(text).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.tail)
+            .padding(.horizontal, 7).padding(.vertical, 1)
             .foregroundStyle(color)
             .background(color.opacity(0.14), in: Capsule())
     }
@@ -242,9 +251,26 @@ struct PolicyBadge: View {
 /// 连接详情检查器
 struct ConnectionDetail: View {
     var record: ConnectionRecord
+    private enum Tab: String, CaseIterable { case overview = "概览", http = "报文" }
+    @State private var tab: Tab = .overview
 
     var body: some View {
         ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Picker("", selection: $tab) { ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden()
+                if tab == .http {
+                    HTTPInspectorView(record: record)
+                } else {
+                    overview
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 10) {
                     Image(nsImage: ProcessIcon.image(path: record.processPath, name: record.process))
@@ -293,7 +319,6 @@ struct ConnectionDetail: View {
                     Text(record.processPath).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
                 }
             }
-            .padding(16)
         }
     }
 
@@ -303,5 +328,14 @@ struct ConnectionDetail: View {
             Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.callout)
+    }
+}
+
+extension View {
+    /// 表格单元格统一行高：固定为单行高度，避免因内容不同（徽标、图标、双行速率）导致行高错位
+    /// - Parameter alignment: 单元格内容的水平对齐方式
+    /// - Returns: 固定高度后的视图
+    func rowCell(alignment: Alignment = .leading) -> some View {
+        frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: alignment)
     }
 }

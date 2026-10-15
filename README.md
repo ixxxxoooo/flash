@@ -19,6 +19,9 @@ macOS 原生的 Surge 风格网络工具：规则分流、策略组、订阅管�
 - **策略组**：手动选择、自动测速、故障转移、负载均衡；支持 `policy-regex-filter`、`include-all-proxies`，按地区自动分组。
 - **订阅**：Clash YAML、分享链接（ss / vmess / trojan / vless / hysteria2 / tuic）、Base64、Surge 配置；自动更新、ETag、流量用量与到期时间。
 - **请求查看**：来自内核的实时连接表（进程、目标、规则、策略链、上下行速率）、详情检查器、已关闭历史、右键一键添加规则、断开连接。
+- **增强模式（TUN）**：无需开发者账号。一次管理员授权安装特权后台服务，以 root 运行内核的 TUN，接管所有应用流量（mixed / system / gVisor 协议栈，fake-ip DNS + 嗅探）。
+- **HTTPS 解密（MitM）**：本地根证书（ECDSA P-256）+ 内置 SwiftNIO 引擎，按 `[MITM] hostname` 选择性解密；支持 `[URL Rewrite]`（reject / 302 / header 重写）、`[Header Rewrite]`、`[Map Local]`、`[Script]`（JavaScriptCore，兼容常用 Surge `$request/$response/$done/$httpClient/$persistentStore` 等 API）。证书固定的站点连续握手失败 3 次后自动直通。
+- **HTTP 报文查看**：请求页详情新增「报文」标签，展示被解密连接的请求 / 响应头与正文（JSON 美化 / 原文 / 十六进制），一键复制 cURL。
 - **统计**：按进程 / 域名 / 策略聚合的每日流量（SQLite）。
 - **规则测试**：输入域名 / IP / 端口 / 进程，本地模拟命中的规则。
 - **菜单栏**：实时速率、模式切换、策略快速切换。
@@ -26,7 +29,14 @@ macOS 原生的 Surge 风格网络工具：规则分流、策略组、订阅管�
 
 ## 范围
 
-当前版本通过**系统代理 + 本地端口**接管流量，无需付费开发者账号。以下能力属于后续阶段，当前未实现：MitM / HTTPS 解密、URL 重写、脚本、Network Extension（增强模式 / TUN）、模块、命令行工具。请求页展示的是**连接级**信息（来自 mihomo `/connections`），不是 HTTP 报文级别。
+默认通过**系统代理 + 本地端口**接管流量；需要接管全部应用时可在设置里安装并启用增强模式（TUN）。全部能力无需付费开发者账号。
+
+限制与说明：
+- MitM 仅处理 HTTP/1.1（不协商 h2）；WebSocket 升级后直接转发；证书固定（Certificate Pinning）的 App 无法解密，会被自动直通。
+- 使用 MitM 前须在设置里生成并信任根证书（系统会弹出授权）；不再使用时请「移除信任」。
+- 增强模式的安装需要管理员密码，内核以 root 运行，仅建议在自己的 Mac 上使用。
+- 未实现：Network Extension、Surge 模块（`.sgmodule`）、命令行工具、HTTP/2 报文级解密。
+- 未命中 `[MITM] hostname` 的连接只有**连接级**信息（来自 mihomo `/connections`）。
 
 ## 构建与运行
 
@@ -70,6 +80,7 @@ Packages/FlashKit/         核心库
   Core/                    内核进程管理（由 launchd 托管）
   System/                  系统代理（networksetup）备份、设置、恢复
   Traffic/                 连接差分引擎与每日流量统计
+  MitM/                    根证书、HTTPS 解密引擎（SwiftNIO）、重写、Map Local、脚本引擎、报文记录
 scripts/                   构建、打包、验收脚本
 ```
 

@@ -47,11 +47,22 @@ public enum SurgeProfileParser {
             case "host":
                 parseHostLine(body, no: line.no, into: &profile)
             case "mitm":
-                if let (k, v) = splitAssign(body), k == "hostname" {
-                    profile.mitmHostnames = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                profile.mitm.parseMitMLine(body)
+            case "url rewrite":
+                if let err = profile.mitm.parseURLRewriteLine(body) {
+                    profile.diagnostics.append(.init(line: line.no, severity: .warning, message: err))
                 }
-                if unsupportedReported.insert("mitm").inserted {
-                    profile.diagnostics.append(.init(line: line.no, severity: .info, message: "[MITM] 已记录主机名，HTTPS 解密将在后续版本提供"))
+            case "header rewrite":
+                if let err = profile.mitm.parseHeaderRewriteLine(body) {
+                    profile.diagnostics.append(.init(line: line.no, severity: .warning, message: err))
+                }
+            case "map local":
+                if let err = profile.mitm.parseMapLocalLine(body) {
+                    profile.diagnostics.append(.init(line: line.no, severity: .warning, message: err))
+                }
+            case "script":
+                if let err = profile.mitm.parseScriptLine(body) {
+                    profile.diagnostics.append(.init(line: line.no, severity: .warning, message: err))
                 }
             default:
                 if section.hasPrefix("ruleset ") {

@@ -41,6 +41,8 @@ struct ProfileView: View {
                             Button("转为本地副本") { profiles.detachManaged(); mainDraft = profiles.mainText }
                         }
                         Divider()
+                        Button("在本地覆盖中插入 MitM / 重写 / 脚本模板") { insertMitMTemplate() }
+                        Divider()
                         Button("恢复默认主配置", role: .destructive) { profiles.resetToDefault(); mainDraft = profiles.mainText }
                     } label: { Image(systemName: "ellipsis") }
                     .menuIndicator(.hidden).buttonStyle(.glass)
@@ -88,6 +90,33 @@ struct ProfileView: View {
         .sheet(isPresented: $showManaged) { managedSheet }
     }
 
+    /// 把 MitM / 重写 / 脚本的示例段落追加到本地覆盖，并切换到该标签
+    private func insertMitMTemplate() {
+        let template = """
+
+
+        # ===== MitM 与重写示例（取消注释后保存即可；需在设置里信任根证书并开启 MitM）=====
+        [MITM]
+        # hostname = *.example.com, api.example.com:8443, -skip.example.com
+
+        [URL Rewrite]
+        # ^https?://ad\\.example\\.com/ - reject
+        # ^https://old\\.example\\.com/(.*) https://new.example.com/$1 302
+
+        [Header Rewrite]
+        # http-request ^https://api\\.example\\.com/ header-add X-Debug 1
+        # http-response ^https://api\\.example\\.com/ header-del Set-Cookie
+
+        [Map Local]
+        # ^https://api\\.example\\.com/ping data-type=text data="{"ok":true}" status-code=200 header="Content-Type:application/json"
+
+        [Script]
+        # demo = type=http-response, pattern=^https://api\\.example\\.com/, script-path=/path/to/demo.js, requires-body=true
+        """
+        target = .overlay
+        if !overlayDraft.contains("[MITM]") { overlayDraft += template }
+    }
+
     private func save() {
         if !profiles.isManaged, mainDraft != profiles.mainText { profiles.saveMain(mainDraft) }
         profiles.saveOverlay(overlayDraft)
@@ -104,6 +133,10 @@ struct ProfileView: View {
                 Label("\(c.groups.count) 策略组", systemImage: "point.3.connected.trianglepath.dotted")
                 Label("\(c.rules.count) 规则", systemImage: "arrow.triangle.branch")
                 Label("\(c.ruleProviders.count) 规则集", systemImage: "tray.full")
+                if !c.mitm.isEmpty {
+                    Label("MitM \(c.mitm.hostPatterns.count) 主机 · \(c.mitm.urlRewrites.count + c.mitm.headerRewrites.count) 重写 · \(c.mitm.mapLocals.count) 映射 · \(c.mitm.scripts.count) 脚本",
+                          systemImage: "lock.open.display")
+                }
                 Spacer()
                 if c.diagnostics.isEmpty {
                     Pill(text: "无问题", color: .green, systemImage: "checkmark.circle")

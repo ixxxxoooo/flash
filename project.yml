@@ -12,8 +12,8 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "2"
 packages:
   FlashKit:
     path: Packages/FlashKit
@@ -39,6 +39,8 @@ targets:
       properties:
         CFBundleDisplayName: Flash
         CFBundleName: Flash
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: "26.0"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "Flash 以 GPL-3.0 许可发布，内置 mihomo 内核（GPL-3.0）"

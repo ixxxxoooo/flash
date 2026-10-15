@@ -43,6 +43,7 @@ final class AppModel {
     let profiles = ProfileStore()
     let stats: TrafficStats
     let settings = AppSettings()
+    let mitm = MitMController()
 
     // MARK: 运行状态
     var outboundMode: OutboundMode = .rule
@@ -53,6 +54,10 @@ final class AppModel {
     var composed = Profile()
     var activePort: Int = 0
     var isDemo = false
+    /// 增强模式组件是否已安装 / 当前内核是否以 TUN 运行
+    var tunInstalled = PrivilegedCore.isInstalled
+    var tunActive = false
+    var tunBusy = false
 
     // MARK: 策略 / 规则
     var policies: [String: PolicyInfo] = [:]
@@ -120,6 +125,9 @@ final class AppModel {
         }
         // 上次异常退出遗留的系统代理先恢复
         await Task.detached { SystemProxy.shared.restoreIfDirty() }.value
+        // 清理可能残留的特权内核启动标记（未处于增强模式时不应有特权内核在运行）
+        if !settings.tunEnabled { PrivilegedCore.deactivate() }
+        mitm.onLog = { [weak self] level, text in self?.append(log: LogEntry(level: level, message: text)) }
         subscriptions.onChange = { [weak self] in self?.scheduleApply() }
         profiles.onChange = { [weak self] in self?.scheduleApply() }
         subscriptions.startAutoUpdate()
@@ -130,16 +138,66 @@ final class AppModel {
         if settings.startCoreOnLaunch { await startCore() }
     }
 
+    // MARK: 增强模式（TUN）
+
+    /// 安装增强模式组件（弹出管理员授权）
+    func installTun() async {
+        guard !tunBusy else { return }
+        tunBusy = true
+        defer { tunBusy = false }
+        do {
+            try await PrivilegedCore.install()
+            tunInstalled = PrivilegedCore.isInstalled
+            noticeMessage = "增强模式组件已安装，开启开关后重启内核即可生效"
+        } catch {
+            errorMessage = "安装增强模式失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// 卸载增强模式组件（需先停止特权内核）
+    func uninstallTun() async {
+        guard !tunBusy else { return }
+        tunBusy = true
+        defer { tunBusy = false }
+        if tunActive { await stopCore() }
+        settings.tunEnabled = false
+        do {
+            try await PrivilegedCore.uninstall()
+            tunInstalled = PrivilegedCore.isInstalled
+            noticeMessage = "增强模式组件已卸载"
+        } catch {
+            errorMessage = "卸载增强模式失败：\(error.localizedDescription)"
+        }
+    }
+
     /// 重新合成配置（不触碰内核）
     func refreshComposed() {
         composed = profiles.composed(subscriptions: subscriptions.enabledNodes())
+    }
+
+    /// 是否应以增强模式（TUN）运行：设置开启且组件已安装
+    private var wantsTun: Bool { settings.tunEnabled && PrivilegedCore.isInstalled }
+
+    /// MitM 引擎当前对内核暴露的端口；未启用时为 nil
+    @ObservationIgnored private var mitmPorts: (Int, Int)?
+
+    /// 准备 MitM 引擎并刷新端口（需在生成内核配置之前调用）
+    private func prepareMitM() async {
+        mitmPorts = await mitm.prepare(config: composed.mitm, enabled: settings.mitmEnabled, recordEnabled: settings.mitmRecord)
+        if settings.mitmEnabled, !composed.mitm.hostPatterns.isEmpty, outboundMode != .rule {
+            noticeMessage = "当前是「\(outboundMode.title)」模式，内核不会按规则分流，MitM 仅在「规则」模式下生效"
+        } else if settings.mitmEnabled, !composed.mitm.hostPatterns.isEmpty, !mitm.caTrusted {
+            noticeMessage = "MitM 已开启，但根证书尚未被系统信任，HTTPS 站点可能报证书错误（请在设置中信任）"
+        }
     }
 
     private func makeYAML() throws -> String {
         let options = RuntimeOptions(
             mixedPort: activePort, controllerPort: controllerPort, secret: secret,
             allowLan: settings.allowLan, mode: outboundMode.rawValue,
-            logLevel: settings.logLevel, ipv6: settings.ipv6)
+            logLevel: settings.logLevel, ipv6: settings.ipv6,
+            tunEnabled: wantsTun, tunStack: settings.tunStack,
+            mitmServerPort: mitmPorts?.0, mitmUpstreamPort: mitmPorts?.1)
         return try ConfigGenerator.yaml(profile: composed, options: options)
     }
 
@@ -149,6 +207,14 @@ final class AppModel {
         defer { busy = false }
         errorMessage = nil
         refreshComposed()
+        tunInstalled = PrivilegedCore.isInstalled
+        if settings.tunEnabled && !tunInstalled {
+            noticeMessage = "增强模式组件未安装，本次以普通模式启动（请在设置中安装）"
+        }
+        let useTun = wantsTun
+        if useTun && !PrivilegedCore.isUpToDate {
+            noticeMessage = "已安装的增强模式内核与内置内核版本不一致，可在设置中重新安装升级"
+        }
 
         // 端口：优先使用设置值，被占用则顺延
         var port = settings.mixedPort
@@ -161,9 +227,10 @@ final class AppModel {
         controllerPort = PortUtil.freePort()
         secret = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 
+        await prepareMitM()
         do {
             let yaml = try makeYAML()
-            await core.start(yaml: yaml, controllerPort: controllerPort, secret: secret)
+            await core.start(yaml: yaml, controllerPort: controllerPort, secret: secret, privileged: useTun)
         } catch {
             errorMessage = "生成配置失败：\(error.localizedDescription)"
             return
@@ -173,8 +240,10 @@ final class AppModel {
             return
         }
         lastStatusRunning = true
+        tunActive = useTun
         await onCoreRunning()
-        if settings.autoSystemProxy { await setSystemProxy(true) }
+        // TUN 已接管全部流量，不再改写系统代理，避免重复经过本地代理端口
+        if settings.autoSystemProxy && !useTun { await setSystemProxy(true) }
     }
 
     func stopCore() async {
@@ -185,6 +254,7 @@ final class AppModel {
         stopStreams()
         await core.stop()
         lastStatusRunning = false
+        tunActive = false
         policies = [:]
         coreRules = []
         tracker.reset()
@@ -254,6 +324,7 @@ final class AppModel {
     func applyConfig() async {
         refreshComposed()
         guard !isDemo, core.status.isRunning else { return }
+        await prepareMitM()
         do {
             let yaml = try makeYAML()
             let check = await CoreManager.validate(yaml: yaml)
@@ -310,6 +381,7 @@ final class AppModel {
         await stats.flush()
         await Task.detached { SystemProxy.shared.restoreSilently() }.value
         await core.stop()
+        await mitm.shutdown()
     }
 
     // MARK: 策略与规则
@@ -376,7 +448,13 @@ final class AppModel {
             for (k, v) in result { delays[k] = v }
             await refreshPolicies()
         } catch {
-            errorMessage = "测速失败：\(error.localizedDescription)"
+            // 组内全部节点超时时内核返回 504，属于正常的测速结果而非错误：把成员标记为超时
+            let msg = error.localizedDescription
+            if msg.contains("504") || msg.lowercased().contains("timeout") {
+                for m in policies[name]?.all ?? [] where policies[m]?.isGroup == false { delays[m] = 0 }
+            } else {
+                errorMessage = "测速失败：\(msg)"
+            }
         }
     }
 
@@ -456,7 +534,7 @@ final class AppModel {
     }
 
     private func ingest(snapshot: ConnectionsSnapshot) {
-        let upd = tracker.apply(snapshot)
+        let upd = tracker.apply(mitmPorts == nil ? snapshot : MitMLink.mergeHops(snapshot))
         active = tracker.active.values.sorted { $0.startedAt > $1.startedAt }
         if !upd.closed.isEmpty {
             closed.insert(contentsOf: upd.closed.sorted { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }, at: 0)

@@ -93,6 +93,9 @@ public final class CoreManager {
         return "com.ixxxxoooo.flash.core.\(String(h, radix: 16))"
     }()
     private var currentYAML: String = ""
+    /// 当前是否以特权模式（TUN，root LaunchDaemon）运行
+    public private(set) var isPrivileged = false
+    private var privilegedMonitor: Task<Void, Never>?
     private var requestedStop = false
     private var restartAttempts: [Date] = []
 
@@ -101,9 +104,11 @@ public final class CoreManager {
     // MARK: 启停
 
     /// 启动内核。`yaml` 必须已包含 external-controller 与 secret。
-    public func start(yaml: String, controllerPort: Int, secret: String) async {
+    /// - Parameter privileged: 为 true 时通过已安装的 root LaunchDaemon 运行（增强模式 / TUN）
+    public func start(yaml: String, controllerPort: Int, secret: String, privileged: Bool = false) async {
         await stop()
         AppPaths.prepare()
+        isPrivileged = privileged
         guard let binary = CoreLocator.binary() else {
             status = .failed("未找到 mihomo 内核，请运行 scripts/fetch-core.sh")
             return
@@ -124,6 +129,11 @@ public final class CoreManager {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: AppPaths.runtimeConfig.path)
         } catch {
             status = .failed("写入运行配置失败: \(error.localizedDescription)")
+            return
+        }
+
+        if privileged {
+            await startPrivileged()
             return
         }
 
@@ -181,6 +191,10 @@ public final class CoreManager {
         requestedStop = true
         exitSource?.cancel()
         exitSource = nil
+        if isPrivileged {
+            await stopPrivileged()
+            return
+        }
         let pid = corePID
         corePID = 0
         guard pid > 0 else {
@@ -203,6 +217,8 @@ public final class CoreManager {
         requestedStop = true
         exitSource?.cancel()
         exitSource = nil
+        privilegedMonitor?.cancel()
+        PrivilegedCore.deactivate()
         let pid = corePID
         corePID = 0
         if pid > 0 { kill(pid, SIGTERM) }
@@ -218,7 +234,7 @@ public final class CoreManager {
             try yaml.write(to: AppPaths.runtimeConfig, atomically: true, encoding: .utf8)
             try await client.reload(configPath: AppPaths.runtimeConfig.path)
         } catch {
-            await start(yaml: yaml, controllerPort: controllerPort, secret: secret)
+            await start(yaml: yaml, controllerPort: controllerPort, secret: secret, privileged: isPrivileged)
         }
     }
 
@@ -250,7 +266,7 @@ public final class CoreManager {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: delay)
             guard !self.requestedStop else { return }
-            await self.start(yaml: yaml, controllerPort: port, secret: sec)
+            await self.start(yaml: yaml, controllerPort: port, secret: sec, privileged: self.isPrivileged)
         }
     }
 
@@ -272,6 +288,79 @@ public final class CoreManager {
         guard let data = try? Data(contentsOf: AppPaths.coreLog), !data.isEmpty else { return }
         let tail = data.suffix(8192)
         let text = String(decoding: tail, as: UTF8.self)
+        recentOutput = text.split(whereSeparator: \.isNewline).suffix(40).map(String.init)
+    }
+
+
+    // MARK: 特权模式（TUN）
+
+    /// 通过 LaunchDaemon 启动 root 内核：创建标记文件后等待控制器就绪
+    private func startPrivileged() async {
+        guard PrivilegedCore.isInstalled else {
+            status = .failed("增强模式组件未安装，请先在设置中安装")
+            return
+        }
+        // 特权内核使用独立工作目录，预置 geo 数据与日志文件
+        let fm = FileManager.default
+        try? fm.createDirectory(at: PrivilegedCore.workDir, withIntermediateDirectories: true)
+        if let src = CoreLocator.resourceDir() {
+            for name in ["geoip.metadb", "geosite.dat", "country.mmdb"] {
+                let to = PrivilegedCore.workDir.appendingPathComponent(name)
+                if !fm.fileExists(atPath: to.path) { try? fm.copyItem(at: src.appendingPathComponent(name), to: to) }
+            }
+        }
+        if !fm.fileExists(atPath: PrivilegedCore.logFile.path) { fm.createFile(atPath: PrivilegedCore.logFile.path, contents: nil) }
+        PrivilegedCore.activate()
+        // 确保 LaunchDaemon 已加载（重启系统后需要重新 bootstrap 的情况由系统自动处理）
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if let v = try? await client?.version() {
+                status = .running(version: v.version)
+                startPrivilegedMonitor()
+                return
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        PrivilegedCore.deactivate()
+        refreshPrivilegedOutput()
+        status = .failed("特权内核启动超时\n" + recentOutput.suffix(5).joined(separator: "\n"))
+    }
+
+    /// 停止特权内核：删除标记文件，等待控制器端口不再响应
+    private func stopPrivileged() async {
+        privilegedMonitor?.cancel()
+        privilegedMonitor = nil
+        PrivilegedCore.deactivate()
+        let hadClient = client
+        for _ in 0..<30 {
+            if (try? await hadClient?.version()) == nil { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        status = .stopped
+    }
+
+    /// 轮询控制器，连续失败则判定特权内核已退出
+    private func startPrivilegedMonitor() {
+        privilegedMonitor?.cancel()
+        privilegedMonitor = Task { [weak self] in
+            var failures = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !self.requestedStop else { return }
+                if (try? await self.client?.version()) != nil { failures = 0; continue }
+                failures += 1
+                if failures >= 3 {
+                    self.refreshPrivilegedOutput()
+                    self.status = .failed("增强模式内核意外退出\n" + self.recentOutput.suffix(6).joined(separator: "\n"))
+                    return
+                }
+            }
+        }
+    }
+
+    private func refreshPrivilegedOutput() {
+        guard let data = try? Data(contentsOf: PrivilegedCore.logFile), !data.isEmpty else { return }
+        let text = String(decoding: data.suffix(8192), as: UTF8.self)
         recentOutput = text.split(whereSeparator: \.isNewline).suffix(40).map(String.init)
     }
 

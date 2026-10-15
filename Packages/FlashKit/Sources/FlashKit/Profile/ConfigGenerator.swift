@@ -10,11 +10,22 @@ public struct RuntimeOptions: Sendable {
     public var mode: String
     public var logLevel: String
     public var ipv6: Bool
+    /// 增强模式（TUN）：开启后生成 tun / fake-ip DNS / 域名嗅探配置
+    public var tunEnabled: Bool
+    /// TUN 协议栈：system / gvisor / mixed
+    public var tunStack: String
+    /// MitM 引擎的 SOCKS 端口与上游入站端口；二者都设置且配置里有 MitM 主机名时才会生成相关配置
+    public var mitmServerPort: Int?
+    public var mitmUpstreamPort: Int?
 
     public init(mixedPort: Int = 6152, controllerPort: Int = 9090, secret: String = "", allowLan: Bool = false,
-                mode: String = "rule", logLevel: String = "info", ipv6: Bool = false) {
+                mode: String = "rule", logLevel: String = "info", ipv6: Bool = false,
+                tunEnabled: Bool = false, tunStack: String = "mixed",
+                mitmServerPort: Int? = nil, mitmUpstreamPort: Int? = nil) {
         self.mixedPort = mixedPort; self.controllerPort = controllerPort; self.secret = secret
         self.allowLan = allowLan; self.mode = mode; self.logLevel = logLevel; self.ipv6 = ipv6
+        self.tunEnabled = tunEnabled; self.tunStack = tunStack
+        self.mitmServerPort = mitmServerPort; self.mitmUpstreamPort = mitmUpstreamPort
     }
 }
 
@@ -46,7 +57,17 @@ public enum ConfigGenerator {
         ]
 
         // DNS
-        root["dns"] = dnsBlock(profile: profile, ipv6: options.ipv6)
+        var dns = dnsBlock(profile: profile, ipv6: options.ipv6)
+        if options.tunEnabled {
+            let tun = tunBlocks(stack: options.tunStack, ipv6: options.ipv6)
+            // TUN 下使用 fake-ip：域名规则无需先解析，且能识别无域名的直连 IP 连接
+            dns["enhanced-mode"] = "fake-ip"
+            dns["fake-ip-range"] = "198.18.0.1/16"
+            dns["fake-ip-filter"] = tun.fakeIPFilter
+            root["tun"] = tun.tun
+            root["sniffer"] = tun.sniffer
+        }
+        root["dns"] = dns
         if !profile.hosts.isEmpty {
             var hosts: [String: Any] = [:]
             for (k, v) in profile.hosts {
@@ -57,7 +78,18 @@ public enum ConfigGenerator {
         }
 
         // 节点
-        root["proxies"] = profile.nodes.map { $0.toDictionary() }
+        var proxies: [[String: Any]] = profile.nodes.map { $0.toDictionary() }
+        var mitmRules: [String] = []
+        if let serverPort = options.mitmServerPort, let upPort = options.mitmUpstreamPort {
+            mitmRules = MitMLink.rules(for: profile.mitm.hostPatterns)
+            if !mitmRules.isEmpty {
+                proxies.append(["name": MitMLink.proxyName, "type": "socks5", "server": "127.0.0.1", "port": serverPort, "udp": false])
+                root["listeners"] = [[
+                    "name": MitMLink.upstreamInboundName, "type": "socks", "port": upPort, "listen": "127.0.0.1", "udp": false,
+                ] as [String: Any]]
+            }
+        }
+        root["proxies"] = proxies
 
         // 策略组
         let testURL = profile.general["proxy-test-url"] ?? defaultTestURL
@@ -97,8 +129,39 @@ public enum ConfigGenerator {
             root["rule-providers"] = providers
         }
 
-        root["rules"] = profile.rules.map(\.text)
+        root["rules"] = mitmRules + profile.rules.map(\.text)
         return root
+    }
+
+    /// 生成增强模式（TUN）所需的 tun 与 sniffer 配置
+    /// - Parameters:
+    ///   - stack: 协议栈名称，非法值回退为 mixed
+    ///   - ipv6: 是否启用 IPv6
+    /// - Returns: tun 块、sniffer 块与 fake-ip 过滤列表
+    static func tunBlocks(stack: String, ipv6: Bool) -> (tun: [String: Any], sniffer: [String: Any], fakeIPFilter: [String]) {
+        let safeStack = ["system", "gvisor", "mixed"].contains(stack) ? stack : "mixed"
+        let tun: [String: Any] = [
+            "enable": true,
+            "stack": safeStack,
+            "auto-route": true,
+            "auto-detect-interface": true,
+            "strict-route": false,
+            "dns-hijack": ["any:53"],
+            "mtu": 1500,
+        ]
+        let sniffer: [String: Any] = [
+            "enable": true,
+            "force-dns-mapping": true,
+            "parse-pure-ip": true,
+            "sniff": [
+                "TLS": ["ports": [443, 8443]],
+                "HTTP": ["ports": [80, "8080-8880"]],
+                "QUIC": ["ports": [443, 8443]],
+            ] as [String: Any],
+        ]
+        let filter = ["*.lan", "+.local", "+.localdomain", "localhost.ptlogin2.qq.com",
+                      "+.msftconnecttest.com", "+.msftncsi.com", "time.*.com", "ntp.*.com", "+.ntp.org"]
+        return (tun, sniffer, filter)
     }
 
     static func dnsBlock(profile: Profile, ipv6: Bool) -> [String: Any] {

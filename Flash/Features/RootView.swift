@@ -68,7 +68,8 @@ struct RootView: View {
                 // 工具栏不再绘制自己的白色底，直接透出下方统一的氛围背景
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .background { AmbientBackground(active: model.isRunning).ignoresSafeArea() }
-                .overlay(alignment: .top) {
+                .overlay(alignment: .bottom) {
+                    // 提示横幅放在底部，避免遮挡页面顶部的标题与筛选控件
                     VStack(spacing: 8) {
                         if let msg = model.errorMessage {
                             Banner(message: msg) { model.errorMessage = nil }
@@ -77,7 +78,7 @@ struct RootView: View {
                             Banner(message: msg, systemImage: "info.circle.fill", tint: .flashAccent) { model.noticeMessage = nil }
                         }
                     }
-                    .padding(.top, 8)
+                    .padding(.bottom, 12)
                     .animation(.smooth, value: model.errorMessage)
                     .animation(.smooth, value: model.noticeMessage)
                 }

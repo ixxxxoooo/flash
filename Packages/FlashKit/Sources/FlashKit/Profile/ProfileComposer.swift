@@ -162,7 +162,7 @@ public enum ProfileComposer {
         for rp in o.ruleProviders {
             if let i = p.ruleProviders.firstIndex(where: { $0.name == rp.name }) { p.ruleProviders[i] = rp } else { p.ruleProviders.append(rp) }
         }
-        p.mitmHostnames = o.mitmHostnames.isEmpty ? p.mitmHostnames : o.mitmHostnames
+        p.mitm = base.mitm.merged(with: o.mitm)
         p.diagnostics += o.diagnostics
         return p
     }
