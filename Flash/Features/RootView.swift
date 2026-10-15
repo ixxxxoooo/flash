@@ -65,6 +65,8 @@ struct RootView: View {
         } detail: {
             detail
                 .toolbar(removing: .title)
+                // 工具栏不再绘制自己的白色底，直接透出下方统一的氛围背景
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .background { AmbientBackground(active: model.isRunning).ignoresSafeArea() }
                 .overlay(alignment: .top) {
                     VStack(spacing: 8) {

@@ -57,6 +57,7 @@ struct RulesView: View {
                 TableColumn("策略") { r in PolicyBadge(policy: r.policy, text: r.policy) }.width(min: 90, ideal: 130)
             }
             .scrollContentBackground(.hidden)
+            .alternatingRowBackgrounds(.disabled)
             .overlay {
                 if rules.isEmpty {
                     ContentUnavailableView("没有规则", systemImage: "arrow.triangle.branch",

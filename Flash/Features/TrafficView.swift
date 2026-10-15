@@ -119,6 +119,7 @@ struct TrafficView: View {
                 contextMenu(for: ids)
             }
             .scrollContentBackground(.hidden)
+            .alternatingRowBackgrounds(.disabled)
             .overlay {
                 if rows.isEmpty {
                     ContentUnavailableView(model.isRunning ? "没有匹配的连接" : "内核未运行",

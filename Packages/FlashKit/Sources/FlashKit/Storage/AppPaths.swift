@@ -36,7 +36,7 @@ public enum AppPaths {
     /// 系统代理备份（含脏标记）
     public static var proxyBackup: URL { supportDir.appendingPathComponent("system-proxy-backup.json") }
     /// 内核 PID 文件，用于清理残留进程
-    public static var jobPlist: URL { coreDir.appendingPathComponent("com.flash.core.plist") }
+    public static var jobPlist: URL { coreDir.appendingPathComponent("com.ixxxxoooo.flash.core.plist") }
 
     public static var corePID: URL { supportDir.appendingPathComponent("core.pid") }
 

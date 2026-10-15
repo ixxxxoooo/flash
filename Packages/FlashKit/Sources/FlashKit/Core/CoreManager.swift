@@ -87,10 +87,10 @@ public final class CoreManager {
     private var exitSource: DispatchSourceProcess?
     /// launchd 任务标签；使用自定义数据目录（FLASH_HOME，测试 / 演示用）时附加目录哈希，避免互相干扰
     static let jobLabel: String = {
-        guard let home = ProcessInfo.processInfo.environment["FLASH_HOME"], !home.isEmpty else { return "com.flash.core" }
+        guard let home = ProcessInfo.processInfo.environment["FLASH_HOME"], !home.isEmpty else { return "com.ixxxxoooo.flash.core" }
         var h: UInt32 = 5381
         for b in home.utf8 { h = h &* 33 &+ UInt32(b) }
-        return "com.flash.core.\(String(h, radix: 16))"
+        return "com.ixxxxoooo.flash.core.\(String(h, radix: 16))"
     }()
     private var currentYAML: String = ""
     private var requestedStop = false

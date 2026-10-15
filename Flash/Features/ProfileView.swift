@@ -72,7 +72,7 @@ struct ProfileView: View {
             }
 
             CodeEditor(text: draft, isEditable: editable)
-                .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
+                .background(.background.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
                 .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(.separator, lineWidth: 0.5) }
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .padding(.horizontal, 24)
